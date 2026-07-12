@@ -1,0 +1,32 @@
+# --- Node / frontend ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# --- Vite / test artifacts ---
+coverage/
+playwright-report/
+test-results/
+.vite/
+
+# --- Tauri / Rust ---
+src-tauri/target/
+src-tauri/gen/
+
+# --- Secrets (CLAUDE.md: APIキー・.env はコミット禁止) ---
+.env
+.env.*
+!.env.example
+*.pem
+
+# --- Multi-agent worktrees (GIT-WORKFLOW.md §2) ---
+.claude/worktrees/
+# Claude Code local per-user settings (permissions cache)
+.claude/settings.local.json
+
+# --- OS / editor ---
+.DS_Store
+*.log
+.idea/
+.vscode/
