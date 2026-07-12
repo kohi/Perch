@@ -174,7 +174,7 @@
 | Vaultパス | 昇格先 `inbox/`・バックアップ `_drafts/` の親フォルダ | 未設定（初回選択） |
 | フォントサイズ既定 | エディタ初期サイズ | 中 |
 | confidence閾値 | AIタグ自動確定のしきい値（0〜1） | 0.8 |
-| 使用モデル | Claude APIのモデル名（`lib/claude.ts`が参照） | claude-sonnet-4-6 |
+| 使用モデル | Claude APIのモデル名（`lib/claude.ts`が参照） | claude-sonnet-5 |
 | Claude APIキー | あのあれ検索／AIタグ用 | 未設定 |
 | （表示）バージョン等 | — | — |
 
