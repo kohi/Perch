@@ -7,6 +7,7 @@ import { clampFontSize, DEFAULT_FONT_SIZE } from "../lib/fontsize";
 const ACTIVE_TAB_KEY = "activeTabId";
 const FONT_SIZE_KEY = "fontSize";
 const PANE_WIDTH_KEY = "paneWidth";
+const VAULT_BASE_KEY = "vaultBase";
 
 /** ペイン幅の許容範囲（screen-spec §2 分割比・ドラッグリサイズ）。 */
 export const PANE_WIDTH_MIN = 180;
@@ -55,4 +56,21 @@ export async function getPaneWidth(db: PerchDB = defaultDb): Promise<number> {
   const entry = await db.meta.get(PANE_WIDTH_KEY);
   if (!entry) return DEFAULT_PANE_WIDTH;
   return clampPaneWidth(Number(entry.value));
+}
+
+/**
+ * Vault ベースフォルダ（昇格先 inbox/・副保存 _drafts/ の親）。screen-spec §8/§10.2。
+ * 未設定なら null。設定は S-07 / オンボーディング S-08 経由でのみ行う。
+ */
+export async function setVaultBase(path: string | null, db: PerchDB = defaultDb): Promise<void> {
+  if (path === null) {
+    await db.meta.delete(VAULT_BASE_KEY);
+  } else {
+    await db.meta.put({ key: VAULT_BASE_KEY, value: path });
+  }
+}
+
+export async function getVaultBase(db: PerchDB = defaultDb): Promise<string | null> {
+  const entry = await db.meta.get(VAULT_BASE_KEY);
+  return entry?.value ?? null;
 }

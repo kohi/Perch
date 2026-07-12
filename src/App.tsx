@@ -25,11 +25,20 @@ import {
   getPaneWidth,
   setPaneWidth,
   clampPaneWidth,
+  getVaultBase,
 } from "./db/meta";
 import { stepFontSize } from "./lib/fontsize";
+import { isTauri, writeNote, deleteNote } from "./lib/vaultFs";
+import { draftFilename, buildNoteMarkdown } from "./lib/noteFile";
 import { CodeMirrorEditor, type CodeMirrorHandle } from "./editor/CodeMirrorEditor";
 import { DiscardModal } from "./components/DiscardModal";
 import { ContextMenu } from "./components/ContextMenu";
+import { PromoteModal } from "./components/PromoteModal";
+import { SettingsModal } from "./components/SettingsModal";
+import { OnboardingModal } from "./components/OnboardingModal";
+
+/** _drafts/ への二重保存 debounce（秒）。IndexedDB 主保存はこれとは独立に即時実行する。 */
+const DRAFT_DEBOUNCE_MS = 2000;
 
 interface ContextMenuState {
   tabId: string;
@@ -51,19 +60,29 @@ export default function App() {
   const [paneWidth, setPaneWidthState] = useState(280);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [discardTargetId, setDiscardTargetId] = useState<string | null>(null);
+  const [vaultBase, setVaultBaseState] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [promoteTargetId, setPromoteTargetId] = useState<string | null>(null);
+  const [draftError, setDraftError] = useState(false);
 
   const editorRef = useRef<CodeMirrorHandle>(null);
   const pendingFocusRef = useRef(false);
+  // 最新の vaultBase を debounce 発火時に参照するための ref（クロージャ陳腐化を防ぐ）。
+  const vaultBaseRef = useRef<string | null>(null);
+  // タブごとの draft 書き出し debounce タイマー。
+  const draftTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // 起動時: IndexedDB から全タブ・最後のアクティブタブ・フォントサイズ・ペイン幅を復元。
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [restored, savedActive, savedFont, savedPane] = await Promise.all([
+      const [restored, savedActive, savedFont, savedPane, savedVault] = await Promise.all([
         listTabs(),
         getActiveTabId(),
         getFontSize(),
         getPaneWidth(),
+        getVaultBase(),
       ]);
       if (cancelled) return;
       setTabs(restored);
@@ -71,11 +90,57 @@ export default function App() {
       setActiveId(activeExists ? savedActive : (restored[0]?.id ?? null));
       setFontSizePx(savedFont);
       setPaneWidthState(savedPane);
+      setVaultBaseState(savedVault);
+      vaultBaseRef.current = savedVault;
+      // 初回（Tauri かつ Vault 未設定）のみオンボーディング。非 Tauri では出さない（E2E 不変）。
+      if (isTauri() && savedVault === null) setShowOnboarding(true);
       setLoaded(true);
     })();
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // vaultBase の最新値を ref に同期（debounce 発火時に参照）。
+  useEffect(() => {
+    vaultBaseRef.current = vaultBase;
+  }, [vaultBase]);
+
+  // アンマウント時に保留中の draft タイマーを掃除（テスト/HMR でのリーク防止）。
+  useEffect(() => {
+    const timers = draftTimersRef.current;
+    return () => {
+      for (const t of timers.values()) clearTimeout(t);
+      timers.clear();
+    };
+  }, []);
+
+  /**
+   * _drafts/ への二重保存を debounce でスケジュールする（screen-spec §4.2）。
+   * IndexedDB 主保存（putTab）は呼び出し側で即時に済んでいる前提。ここは「副」保存。
+   * 非 Tauri or Vault 未設定では no-op（ブラウザ E2E に影響させない）。
+   * 失敗しても入力は止めず、控えめな警告フラグのみ立てる（§4.3）。
+   */
+  const scheduleDraftWrite = useCallback((tab: Tab) => {
+    if (!isTauri()) return;
+    const timers = draftTimersRef.current;
+    const existing = timers.get(tab.id);
+    if (existing) clearTimeout(existing);
+    const handle = setTimeout(() => {
+      timers.delete(tab.id);
+      const base = vaultBaseRef.current;
+      if (!base) return; // Vault 未設定なら副保存はスキップ（主保存は継続済み）
+      const content = buildNoteMarkdown({
+        title: tab.title,
+        body: tab.body,
+        createdAt: tab.createdAt,
+        tags: tab.tags,
+      });
+      void writeNote(base, "draft", draftFilename(tab.id), content)
+        .then(() => setDraftError(false))
+        .catch(() => setDraftError(true)); // 入力は止めない・警告のみ
+    }, DRAFT_DEBOUNCE_MS);
+    timers.set(tab.id, handle);
   }, []);
 
   const ordered = useMemo(() => sortTabs(tabs), [tabs]);
@@ -115,11 +180,14 @@ export default function App() {
           title: deriveTitle(body, cur.createdAt),
           updatedAt: Date.now(),
         };
+        // 主 = IndexedDB へ即時保存（揮発防止の要・遅延させない）。
         void putTab(next);
+        // 副 = _drafts/ へ debounce 書き出し（二重保存・Tauri のみ）。
+        scheduleDraftWrite(next);
         return prev.map((t) => (t.id === next.id ? next : t));
       });
     },
-    [activeId],
+    [activeId, scheduleDraftWrite],
   );
 
   const handleTogglePin = useCallback(async (id: string) => {
@@ -135,8 +203,21 @@ export default function App() {
   const confirmDelete = useCallback(async () => {
     const id = discardTargetId;
     if (!id) return;
-    // TODO(Wave3): _drafts/ の対応ファイルも削除する。
+    // 保留中の draft タイマーがあれば止める（削除後に書き戻さないため）。
+    const pending = draftTimersRef.current.get(id);
+    if (pending) {
+      clearTimeout(pending);
+      draftTimersRef.current.delete(id);
+    }
+    // 主 = IndexedDB から削除。
     await dbDeleteTab(id);
+    // 副 = _drafts/ の対応ファイルも削除（TC-106 完成形）。Tauri かつ Vault 設定時のみ。
+    const base = vaultBaseRef.current;
+    if (isTauri() && base) {
+      void deleteNote(base, "draft", draftFilename(id)).catch(() => {
+        /* 冪等・削除失敗は致命ではない。DB からは既に消えている。 */
+      });
+    }
     setDiscardTargetId(null);
     setTabs((prev) => {
       const remaining = prev.filter((t) => t.id !== id);
@@ -148,6 +229,27 @@ export default function App() {
       return remaining;
     });
   }, [discardTargetId, activeId]);
+
+  // --- Vault 昇格（S-05）／設定（S-07）／オンボーディング（S-08）。 ---
+
+  /** Vault パス確定（設定・オンボーディング共通）。state と ref を同期。 */
+  const handleVaultChange = useCallback((base: string) => {
+    setVaultBaseState(base);
+    vaultBaseRef.current = base;
+    setDraftError(false); // パスが有効になったので警告解除
+  }, []);
+
+  /** 昇格成功時：更新済みタブを DB 永続化＋一覧へ反映（TC-406）。 */
+  const handlePromoted = useCallback((updated: Tab) => {
+    void putTab(updated);
+    setTabs((prev) => prev.map((t) => (t.id === updated.id ? updated : t)));
+    setPromoteTargetId(null);
+  }, []);
+
+  const promoteTarget = useMemo(
+    () => tabs.find((t) => t.id === promoteTargetId) ?? null,
+    [tabs, promoteTargetId],
+  );
 
   // --- フォントサイズ（A-/A+・Cmd±）。変更値は meta 永続化 → 再起動維持（TC-306/307）。 ---
   const changeFontSize = useCallback((dir: 1 | -1) => {
@@ -303,14 +405,34 @@ export default function App() {
             </span>
           </div>
           <div className="toolbar-group toolbar-right">
-            {/* TODO(Wave3): Vault昇格(S-05)。今は無効プレースホルダ。 */}
+            {/* _drafts/ 書き出し失敗時の控えめ警告（§4.3）。クリックで設定へ誘導。 */}
+            {draftError && (
+              <button
+                className="tool-btn warn"
+                data-testid="draft-warning"
+                title="バックアップ書き出しに失敗しました。設定で Vault を確認してください。"
+                onClick={() => setShowSettings(true)}
+              >
+                ⚠ バックアップ失敗
+              </button>
+            )}
+            <button
+              className="tool-btn"
+              data-testid="settings-open"
+              title="設定（S-07）"
+              onClick={() => setShowSettings(true)}
+            >
+              ⚙
+            </button>
+            {/* Vault 昇格（S-05）。アクティブタブが空でなければ有効。 */}
             <button
               className="tool-btn"
               data-testid="promote-btn"
-              disabled
-              title="Wave 3で実装"
+              disabled={!active || active.body.trim().length === 0}
+              title="Vault に残す（S-05）"
+              onClick={() => active && setPromoteTargetId(active.id)}
             >
-              ［これ残す］
+              {active?.promoted ? "［更新］" : "［これ残す］"}
             </button>
           </div>
         </div>
@@ -365,6 +487,36 @@ export default function App() {
           }
           onConfirm={() => void confirmDelete()}
           onCancel={() => setDiscardTargetId(null)}
+        />
+      )}
+
+      {promoteTarget && (
+        <PromoteModal
+          tab={promoteTarget}
+          vaultBase={vaultBase}
+          onNeedVault={() => {
+            setPromoteTargetId(null);
+            setShowSettings(true);
+          }}
+          onPromoted={handlePromoted}
+          onCancel={() => setPromoteTargetId(null)}
+        />
+      )}
+
+      {showSettings && (
+        <SettingsModal
+          vaultBase={vaultBase}
+          onVaultChange={handleVaultChange}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
+
+      {showOnboarding && (
+        <OnboardingModal
+          onDone={(base) => {
+            handleVaultChange(base);
+            setShowOnboarding(false);
+          }}
         />
       )}
     </div>
