@@ -1,4 +1,4 @@
-import { defineConfig } from "@playwright/test";
+import { defineConfig, devices } from "@playwright/test";
 
 /**
  * E2E: 揮発防止（強制kill→再起動の復元 = TC-103）の実プロセス検証。
@@ -14,6 +14,17 @@ export default defineConfig({
   retries: 0,
   timeout: 120_000,
   reporter: [["list"]],
+  /*
+   * tablist.spec / editor.spec は page fixture（chromium project）を使う。
+   * restore.spec は自前 spawn（固定 user-data-dir ＋ SIGKILL）で page fixture を使わないため、
+   * project browser の影響を受けずそのまま動く。
+   */
+  projects: [
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"], baseURL: "http://localhost:1420" },
+    },
+  ],
   webServer: {
     command: "npm run build && npm run preview",
     url: "http://localhost:1420",
