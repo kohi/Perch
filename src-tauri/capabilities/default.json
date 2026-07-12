@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Perch メインウィンドウの既定 capability（Wave 1 は core のみ）",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -1,0 +1,25 @@
+[package]
+name = "perch"
+version = "0.1.0"
+description = "揮発しない賢いmi + Vault昇格 + AIあのあれ検索"
+authors = ["Perch"]
+edition = "2021"
+rust-version = "1.77.2"
+
+# main.rs と lib.rs 両方を持つ Tauri 2 標準構成。
+# lib は mobile 対応や統合テストのために共有クレートとして切る。
+[lib]
+name = "perch_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# デフォルトでカスタムプロトコルを有効化（本番ビルド用）
+custom-protocol = ["tauri/custom-protocol"]

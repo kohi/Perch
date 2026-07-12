@@ -1,0 +1,6 @@
+// Windows のリリースビルドで余分なコンソールウィンドウを出さない（macOS では無害）。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+fn main() {
+    perch_lib::run()
+}
