@@ -14,4 +14,22 @@
   --border: #33333b;
   --panel-hover: #2b2b33;
   --accent-weak: rgba(124, 152, 133, 0.18);
+  --active-line: rgba(124, 152, 133, 0.08);
+
+  /*
+   * CodeMirror シンタックスハイライト用トークン（墨と和紙の調和を保つ配色）。
+   * エディタの色も必ずここ経由で参照する（直値ハードコード禁止）。
+   */
+  --cm-keyword: #b08cc4; /* 藤（keyword/operator） */
+  --cm-string: #a3b58a; /* 若草（string） */
+  --cm-comment: #6b6b73; /* 補助色（comment） */
+  --cm-number: #d1a05f; /* 山吹（number） */
+  --cm-tag: #c17b6f; /* 朱鷺（tagName） */
+  --cm-attribute: #7c9885; /* 苔緑（attributeName） */
+  --cm-property: #8fb0c4; /* 浅葱（propertyName） */
+  --cm-type: #d1a05f; /* 山吹（typeName） */
+  --cm-variable: #e8e6e1; /* 生成り（variableName） */
+  --cm-punctuation: #9a9aa2; /* punctuation */
+  --cm-heading: #c9b78a; /* 砂子（Markdown heading） */
+  --cm-emphasis: #d0b0d8; /* emphasis */
 }
