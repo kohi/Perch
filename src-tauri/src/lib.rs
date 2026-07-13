@@ -37,11 +37,28 @@ fn ensure_vault_dirs(base: String) -> Result<(), String> {
 }
 
 /// フォルダ選択ダイアログを表示し、選択された絶対パスを返す（キャンセルは None）。
-/// tauri-plugin-dialog の Rust ブロッキング API を使う（フロントから直接 dialog は呼ばない）。
+///
+/// 【重要・フリーズ対策】このコマンドは **async** にする。Tauri 2 では同期コマンドは
+/// メインスレッドで実行されるため、そこで `blocking_pick_folder()` を呼ぶと
+/// ダイアログのイベントループを回すメインスレッドが塞がり、アプリ全体がフリーズする。
+/// async コマンドはメインスレッド外（async runtime）で走るので、非ブロッキングの
+/// コールバック版 `pick_folder` でダイアログをメインスレッドへ委譲し、結果を
+/// チャネルで受け取る。こうするとメインスレッドは解放され、ダイアログが操作可能になる。
+/// （フロントから直接 dialog プラグインは呼ばず、この command 経由に限定する。）
 #[tauri::command]
-fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+async fn pick_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    match app.dialog().file().blocking_pick_folder() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    // 非ブロッキング。ダイアログはメインスレッドのイベントループで表示され、
+    // 選択/キャンセル時にこのコールバックがメインスレッドから呼ばれる。
+    app.dialog().file().pick_folder(move |picked| {
+        let _ = tx.send(picked);
+    });
+    // async runtime 上で待機（メインスレッドは塞がない）。コールバックが send するまで待つ。
+    let picked = rx
+        .recv()
+        .map_err(|e| format!("フォルダ選択の受信に失敗: {e}"))?;
+    match picked {
         Some(fp) => {
             let path = fp.into_path().map_err(|e| format!("パス解決に失敗: {e}"))?;
             Ok(Some(path.to_string_lossy().to_string()))
