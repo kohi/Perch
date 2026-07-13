@@ -248,3 +248,134 @@ export async function rankNotes(
   const text = await requestMessage(cfg, { user: buildRankPrompt(input), maxTokens: 1024 });
   return parseRankResponse(text);
 }
+
+// --- Wave5 拡張スロット本実装（関連あぶり出し / 増幅 / [[関連リンク]] 提案）。 ---
+
+/**
+ * 関連メモをあぶり出すプロンプト（純関数・requirements §6.7）。
+ * 起点メモの title/excerpt と候補の id/title/excerpt のみを埋め込む。
+ * buildRankPrompt と同様、候補は id/title/excerpt に射影して余分フィールド（全文/パス）の
+ * 混入を防ぐ（送信範囲最小化の砦・TC-607）。marker「候補一覧(JSON):」は rank と共用。
+ */
+export function buildRelatedPrompt(input: {
+  source: { title: string; excerpt: string };
+  candidates: RankCandidate[];
+}): string {
+  const list = input.candidates.map((c) => ({
+    id: c.id,
+    title: c.title,
+    excerpt: c.excerpt,
+  }));
+  return [
+    "あなたはメモ発想アシスタントです。",
+    "次の起点メモに意味的に関連するメモを、関連度 score(0〜1) 付きで順位付けしてください。",
+    "関連しないメモは含めないでください。JSON 配列のみを出力してください。",
+    '形式: [{"id": "候補のid", "score": 0.0}]',
+    "",
+    `起点メモのタイトル: ${input.source.title}`,
+    `起点メモの抜粋: ${input.source.excerpt}`,
+    "候補一覧(JSON):",
+    JSON.stringify(list),
+  ].join("\n");
+}
+
+/** 関連あぶり出し: 起点メモに近い候補をランク付け。送信は id/title/excerpt のみ（TC-607）。 */
+export async function relatedNotes(
+  cfg: ClaudeConfig,
+  input: { source: { title: string; excerpt: string }; candidates: RankCandidate[] },
+): Promise<RankResult[]> {
+  const text = await requestMessage(cfg, { user: buildRelatedPrompt(input), maxTokens: 1024 });
+  return parseRankResponse(text);
+}
+
+/** 増幅の入力ソース。増幅は対象タブ本文を送る必要があるため、選択タブのみに限定する。 */
+export interface AmplifySource {
+  title: string;
+  body: string;
+}
+
+/**
+ * 選択タブ増幅プロンプト（純関数）。複数メモを結合・要約し発想を広げた Markdown 下書きを
+ * 1本生成させる。各ソースの title/body を見出し付きで埋め込む。
+ * 増幅は本文が本質的に必要なので body を送るが、対象は「選択タブのみ」（呼び出し側で限定）。
+ */
+export function buildAmplifyPrompt(input: { sources: AmplifySource[] }): string {
+  const blocks = input.sources.map((s, i) => [`## メモ${i + 1}: ${s.title}`, s.body].join("\n"));
+  return [
+    "あなたは発想を増幅するライティングアシスタントです。",
+    "次の複数のメモを結合し、要約しつつ発想を広げた Markdown の下書きを1本作成してください。",
+    "見出しや箇条書きで構造化してよいです。Markdown 本文のみを出力してください。",
+    "",
+    ...blocks,
+  ].join("\n");
+}
+
+/**
+ * 増幅応答をパースする（純関数）。trim し、前後に ```markdown ... ``` / ``` ... ``` の
+ * コードフェンスがあれば剥がす程度にとどめる（過剰汎用化しない）。
+ */
+export function parseAmplifyResponse(text: string): string {
+  const t = text.trim();
+  const fence = t.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/);
+  if (fence && fence[1] !== undefined) return fence[1].trim();
+  return t;
+}
+
+/** 選択タブ増幅: 結合下書きを1本返す。max_tokens 2048。 */
+export async function amplifyTabs(
+  cfg: ClaudeConfig,
+  input: { sources: AmplifySource[] },
+): Promise<string> {
+  const text = await requestMessage(cfg, { user: buildAmplifyPrompt(input), maxTokens: 2048 });
+  return parseAmplifyResponse(text);
+}
+
+/**
+ * [[関連リンク]] 提案の候補。id は wiki-link 名（Vault ファイル名から `.md` を除いたもの）。
+ * title/excerpt のみ併送（全文/パスは送らない = 送信範囲最小化）。
+ */
+export interface LinkCandidate {
+  id: string;
+  title: string;
+  excerpt: string;
+}
+
+/**
+ * [[関連リンク]] 提案プロンプト（純関数）。source の title/excerpt と候補の id/title/excerpt
+ * のみを射影して埋め込む（余分フィールド混入防止・TC-607）。応答は rank と同形の [{id,score}]。
+ */
+export function buildLinkPrompt(input: {
+  source: { title: string; excerpt: string };
+  candidates: LinkCandidate[];
+}): string {
+  const list = input.candidates.map((c) => ({
+    id: c.id,
+    title: c.title,
+    excerpt: c.excerpt,
+  }));
+  return [
+    "あなたはノート間リンクの提案アシスタントです。",
+    "次のノートに関連し `[[関連リンク]]` として繋げるべき候補を、関連度 score(0〜1) 付きで順位付けしてください。",
+    "関連しないものは含めないでください。JSON 配列のみを出力してください。",
+    '形式: [{"id": "候補のid", "score": 0.0}]',
+    "",
+    `ノートのタイトル: ${input.source.title}`,
+    `ノートの抜粋: ${input.source.excerpt}`,
+    "候補一覧(JSON):",
+    JSON.stringify(list),
+  ].join("\n");
+}
+
+/** リンク提案応答をパース（純関数）。rank と同形なので parseRankResponse を再利用。 */
+export function parseLinkResponse(text: string): RankResult[] {
+  return parseRankResponse(text);
+}
+
+/** [[関連リンク]] 提案: Vault 候補をランク付け。送信は id/title/excerpt のみ。max_tokens 512。 */
+export async function suggestLinks(
+  cfg: ClaudeConfig,
+  input: { source: { title: string; excerpt: string }; candidates: LinkCandidate[] },
+): Promise<RankResult[]> {
+  const text = await requestMessage(cfg, { user: buildLinkPrompt(input), maxTokens: 512 });
+  return parseLinkResponse(text);
+}

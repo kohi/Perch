@@ -85,3 +85,29 @@ export function buildNoteMarkdown(params: BuildNoteMarkdownParams): string {
   ].join("\n");
   return `${frontmatter}\n\n${body}`;
 }
+
+/**
+ * 承認済み wiki-link 名を本文末尾に `[[name]]` 形式で追記する純関数（Wave5・S-05 拡張）。
+ * requirements §6.7 の `[[関連リンク]]` 提案の確定分だけを本文へ落とす。
+ *
+ * - 空配列なら body をそのまま返す（不変）。
+ * - 空文字/空白のみの名前・重複名は除去する。
+ * - 既に本文中へ `[[name]]` として存在する名前はスキップ（二重追記しない）。
+ * - 追記は本文末尾に空行を1つ挟み、各リンクを改行区切りで並べる。
+ */
+export function appendRelatedLinks(body: string, linkNames: string[]): string {
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  for (const raw of linkNames) {
+    const name = raw.trim();
+    if (name.length === 0) continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    // 既に本文中に同名リンクがあれば追記しない（検索・グラフのノイズ防止）。
+    if (body.includes(`[[${name}]]`)) continue;
+    cleaned.push(name);
+  }
+  if (cleaned.length === 0) return body;
+  const links = cleaned.map((n) => `[[${n}]]`).join("\n");
+  return `${body}\n\n${links}`;
+}
