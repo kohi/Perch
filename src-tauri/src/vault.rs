@@ -117,6 +117,81 @@ pub fn note_exists_impl(base: &str, kind: &str, filename: &str) -> Result<bool, 
     Ok(path.is_file())
 }
 
+/// あのあれ検索の Vault 側候補として、`inbox/` 直下の 1 ノートを表す。
+/// `#[derive(serde::Serialize)]` でフロントへそのまま返せる。
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
+pub struct VaultNote {
+    pub filename: String,
+    pub path: String,
+    pub content: String,
+}
+
+/// `base/inbox/` 直下の `*.md` を全て読み、`VaultNote` の Vec を返す。
+///
+/// - `base` は絶対パス必須（`resolve_safe_path` と同じ検証観点）。
+/// - `inbox` が存在しない場合は **空 Vec**（エラーにしない）。
+/// - `.md` 以外は無視。サブディレクトリは辿らない（inbox 直下のみ）。
+/// あのあれ検索の候補（Vault 側）に使う純関数。
+pub fn read_vault_notes_impl(base: &str) -> Result<Vec<VaultNote>, String> {
+    let base_path = Path::new(base);
+    if !base_path.is_absolute() {
+        return Err(format!("base は絶対パスである必要があります: {base}"));
+    }
+
+    let inbox = base_path.join("inbox");
+    // inbox が無ければ空（初回・未昇格状態）。エラーにしない。
+    if !inbox.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let rd = std::fs::read_dir(&inbox).map_err(|e| format!("inbox の読み取りに失敗: {e}"))?;
+    let mut notes = Vec::new();
+    for entry in rd {
+        let entry = entry.map_err(|e| format!("inbox エントリの取得に失敗: {e}"))?;
+        let path = entry.path();
+        // 直下の通常ファイルのみ。サブディレクトリは辿らない。
+        if !path.is_file() {
+            continue;
+        }
+        // 拡張子が md（大小無視）のもののみ。
+        let is_md = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("md"))
+            .unwrap_or(false);
+        if !is_md {
+            continue;
+        }
+        let filename = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let content =
+            std::fs::read_to_string(&path).map_err(|e| format!("{filename} の読み取りに失敗: {e}"))?;
+        notes.push(VaultNote {
+            filename,
+            path: path.to_string_lossy().to_string(),
+            content,
+        });
+    }
+    // 決定的な順序（ファイル名昇順）で返す。
+    notes.sort_by(|a, b| a.filename.cmp(&b.filename));
+    Ok(notes)
+}
+
+/// `base/inbox/filename` を OS 既定アプリ（macOS `open`）で開く。
+///
+/// **セキュリティ**: 必ず `resolve_safe_path(base, "inbox", filename)` で検証してから
+/// `open` に渡す。検証を通らない filename は開かず Err。spawn 失敗も Err。
+pub fn open_note_impl(base: &str, filename: &str) -> Result<(), String> {
+    let path = resolve_safe_path(base, "inbox", filename)?;
+    std::process::Command::new("open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("ノートを開けませんでした: {e}"))?;
+    Ok(())
+}
+
 /// base/inbox と base/_drafts を作成する。
 pub fn ensure_vault_dirs_impl(base: &str) -> Result<(), String> {
     let base_path = Path::new(base);
@@ -270,6 +345,75 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn read_vault_notes_returns_real_files_content_and_ignores_non_md() {
+        let dir = temp_base();
+        let base = dir.path().to_str().unwrap();
+        let inbox = dir.path().join("inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        // 実ファイルを 2 つ書く（内容に非 ASCII を含める）。
+        let body_a = "# アルファ\nあのあれ\u{1F426}";
+        let body_b = "beta body\nsecond line";
+        std::fs::write(inbox.join("alpha.md"), body_a).unwrap();
+        std::fs::write(inbox.join("beta.md"), body_b).unwrap();
+        // 非 .md は無視されること。
+        std::fs::write(inbox.join("note.txt"), "not markdown").unwrap();
+        std::fs::write(inbox.join("no-ext"), "no extension").unwrap();
+        // サブディレクトリ内の .md は辿らない。
+        std::fs::create_dir_all(inbox.join("sub")).unwrap();
+        std::fs::write(inbox.join("sub").join("nested.md"), "nested").unwrap();
+
+        let notes = read_vault_notes_impl(base).unwrap();
+
+        // .md 2 件のみ（.txt / 拡張子なし / サブディレクトリは除外）。
+        assert_eq!(notes.len(), 2, "md 以外/サブディレクトリが混入した: {notes:?}");
+        // ファイル名昇順で決定的。
+        assert_eq!(notes[0].filename, "alpha.md");
+        assert_eq!(notes[1].filename, "beta.md");
+        // 実際に書いた content が読み戻せる（DB 完結でなく実バイト由来）。
+        assert_eq!(notes[0].content, body_a);
+        assert_eq!(notes[1].content, body_b);
+        // path は絶対で実在。
+        assert!(Path::new(&notes[0].path).is_absolute());
+        assert!(Path::new(&notes[0].path).is_file());
+        assert_eq!(Path::new(&notes[0].path), inbox.join("alpha.md"));
+    }
+
+    #[test]
+    fn read_vault_notes_missing_inbox_returns_empty_not_err() {
+        let dir = temp_base();
+        let base = dir.path().to_str().unwrap();
+        // inbox を作らない。
+        assert!(!dir.path().join("inbox").exists());
+        let notes = read_vault_notes_impl(base).unwrap();
+        assert!(notes.is_empty(), "inbox 無しなのに空でない: {notes:?}");
+    }
+
+    #[test]
+    fn read_vault_notes_rejects_relative_base() {
+        assert!(read_vault_notes_impl("relative/dir").is_err());
+    }
+
+    #[test]
+    fn open_note_path_validation_goes_through_resolve() {
+        // 実際の `open` spawn（GUI 起動）はテストしない。ここでは open_note が
+        // resolve_safe_path を通ることで危険な filename を弾くことのみ担保する。
+        let dir = temp_base();
+        let base = dir.path().to_str().unwrap();
+
+        // resolve_safe_path が弾く代表ケースは open_note でも Err（open しない）。
+        assert!(open_note_impl(base, "../evil.md").is_err(), "親脱出を弾いていない");
+        assert!(open_note_impl(base, "a/b.md").is_err(), "サブパスを弾いていない");
+        assert!(open_note_impl(base, "").is_err(), "空 filename を弾いていない");
+        assert!(open_note_impl("relative/dir", "ok.md").is_err(), "相対 base を弾いていない");
+
+        // 同じ検証が resolve_safe_path(inbox, ..) を通っていることを直接確認。
+        assert!(resolve_safe_path(base, "inbox", "../evil.md").is_err());
+        assert!(resolve_safe_path(base, "inbox", "a/b.md").is_err());
+        assert!(resolve_safe_path(base, "inbox", "").is_err());
     }
 
     #[test]
