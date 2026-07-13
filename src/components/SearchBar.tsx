@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { forwardRef, useCallback, useImperativeHandle, useRef, useState } from "react";
 import type { Tab } from "../types/tab";
 import { deriveTitle } from "../lib/title";
 import { isAiConfigured, rankNotes, type RankCandidate } from "../lib/claude";
@@ -41,6 +41,11 @@ export interface SearchBarProps {
   onOpenSettings: () => void;
 }
 
+/** App から Cmd+F で検索入力へフォーカスさせるための命令ハンドル（screen-spec §10.1）。 */
+export interface SearchBarHandle {
+  focusInput: () => void;
+}
+
 /** 空白を畳んで先頭 max 文字に丸めた抜粋を作る（送信・表示共通）。 */
 function makeExcerpt(text: string, max = 120): string {
   const flat = text.replace(/\s+/g, " ").trim();
@@ -53,18 +58,19 @@ function stripFrontmatter(md: string): string {
   return m ? md.slice(m[0].length) : md;
 }
 
-export function SearchBar({
-  tabs,
-  vaultBase,
-  claudeModel,
-  claudeApiKey,
-  onSelectTab,
-  onOpenSettings,
-}: SearchBarProps) {
+export const SearchBar = forwardRef<SearchBarHandle, SearchBarProps>(function SearchBar(
+  { tabs, vaultBase, claudeModel, claudeApiKey, onSelectTab, onOpenSettings },
+  ref,
+) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<SearchStatus>("idle");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [errorMsg, setErrorMsg] = useState<string>("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    focusInput: () => inputRef.current?.focus(),
+  }));
 
   const runSearch = useCallback(async () => {
     const q = query.trim();
@@ -168,6 +174,7 @@ export function SearchBar({
           🔍
         </span>
         <input
+          ref={inputRef}
           className="search-input"
           data-testid="search-input"
           type="search"
@@ -273,4 +280,4 @@ export function SearchBar({
       </div>
     </section>
   );
-}
+});

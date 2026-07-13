@@ -36,15 +36,15 @@ import {
 } from "./db/meta";
 import { stepFontSize } from "./lib/fontsize";
 import { DEFAULT_MODEL, resolveModel } from "./lib/claude";
-import { isTauri, writeNote, deleteNote } from "./lib/vaultFs";
+import { isTauri, writeNote, deleteNote, openNote } from "./lib/vaultFs";
 import { draftFilename, buildNoteMarkdown } from "./lib/noteFile";
 import { CodeMirrorEditor, type CodeMirrorHandle } from "./editor/CodeMirrorEditor";
 import { DiscardModal } from "./components/DiscardModal";
-import { ContextMenu } from "./components/ContextMenu";
+import { ContextMenu, type ContextMenuItem } from "./components/ContextMenu";
 import { PromoteModal } from "./components/PromoteModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { OnboardingModal } from "./components/OnboardingModal";
-import { SearchBar } from "./components/SearchBar";
+import { SearchBar, type SearchBarHandle } from "./components/SearchBar";
 
 /** _drafts/ への二重保存 debounce（秒）。IndexedDB 主保存はこれとは独立に即時実行する。 */
 const DRAFT_DEBOUNCE_MS = 2000;
@@ -80,6 +80,7 @@ export default function App() {
   const [claudeApiKey, setClaudeApiKeyState] = useState<string | null>(null);
 
   const editorRef = useRef<CodeMirrorHandle>(null);
+  const searchRef = useRef<SearchBarHandle>(null);
   const pendingFocusRef = useRef(false);
   // 最新の vaultBase を debounce 発火時に参照するための ref（クロージャ陳腐化を防ぐ）。
   const vaultBaseRef = useRef<string | null>(null);
@@ -304,6 +305,7 @@ export default function App() {
     });
   }, []);
 
+  // --- キーボードショートカット（screen-spec §10.1）。全て preventDefault する。 ---
   useEffect(() => {
     if (!loaded) return;
     const onKey = (e: KeyboardEvent) => {
@@ -314,11 +316,27 @@ export default function App() {
       } else if (e.key === "-" || e.key === "_") {
         e.preventDefault();
         changeFontSize(-1);
+      } else if (e.key === "n" || e.key === "N") {
+        // Cmd+N: 新規タブ（作成後エディタへフォーカス）。
+        e.preventDefault();
+        void handleNewTab();
+      } else if (e.key === "s" || e.key === "S") {
+        // Cmd+S: アクティブタブの S-05 昇格ダイアログ（本文が空なら無効）。
+        e.preventDefault();
+        if (active && active.body.trim().length > 0) setPromoteTargetId(active.id);
+      } else if (e.key === "f" || e.key === "F") {
+        // Cmd+F: あのあれ検索入力へフォーカス。
+        e.preventDefault();
+        searchRef.current?.focusInput();
+      } else if (e.key === ",") {
+        // Cmd+,: 設定（S-07）。
+        e.preventDefault();
+        setShowSettings(true);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [loaded, changeFontSize]);
+  }, [loaded, changeFontSize, handleNewTab, active]);
 
   // --- ペイン幅リサイズ（ドラッグ）。確定(mouseup)で meta 永続化（screen-spec §10.2）。 ---
   const draggingRef = useRef(false);
@@ -371,6 +389,7 @@ export default function App() {
               data-testid="tab-item"
               data-tabid={t.id}
               data-active={t.id === activeId ? "true" : "false"}
+              data-promoted={t.promoted ? "true" : "false"}
               onClick={() => selectTab(t.id)}
               onContextMenu={(e) => {
                 e.preventDefault();
@@ -383,6 +402,16 @@ export default function App() {
               <span className="tab-title" data-testid="tab-title">
                 {t.title || deriveTitle(t.body, t.createdAt)}
               </span>
+              {t.promoted && (
+                <span
+                  className="tab-promoted"
+                  data-testid="tab-promoted-mark"
+                  title="Vault 昇格済み"
+                  aria-label="昇格済み"
+                >
+                  ✓
+                </span>
+              )}
               <span className="tab-actions">
                 <button
                   className="icon-btn"
@@ -498,6 +527,7 @@ export default function App() {
       </main>
 
       <SearchBar
+        ref={searchRef}
         tabs={tabs}
         vaultBase={vaultBase}
         claudeModel={resolveModel(claudeModel)}
@@ -506,27 +536,43 @@ export default function App() {
         onOpenSettings={() => setShowSettings(true)}
       />
 
-      {contextMenu && (
-        <ContextMenu
-          x={contextMenu.x}
-          y={contextMenu.y}
-          onClose={() => setContextMenu(null)}
-          items={[
+      {contextMenu &&
+        (() => {
+          const ctxTab = tabs.find((t) => t.id === contextMenu.tabId) ?? null;
+          const items: ContextMenuItem[] = [
             {
-              label:
-                (tabs.find((t) => t.id === contextMenu.tabId)?.pinned ? "ピン留め解除" : "ピン留め"),
+              label: ctxTab?.pinned ? "ピン留め解除" : "ピン留め",
               testId: "ctx-pin",
               onSelect: () => void handleTogglePin(contextMenu.tabId),
             },
-            {
-              label: "破棄",
-              testId: "ctx-delete",
-              danger: true,
-              onSelect: () => requestDelete(contextMenu.tabId),
-            },
-          ]}
-        />
-      )}
+          ];
+          // 昇格済み かつ Tauri かつ Vault 設定時のみ「Vault で開く」（screen-spec §3.2）。
+          if (ctxTab?.promoted && ctxTab.promotedPath && isTauri() && vaultBase) {
+            const filename = ctxTab.promotedPath.split("/").pop() ?? "";
+            items.push({
+              label: "Vault で開く",
+              testId: "ctx-open-vault",
+              onSelect: () =>
+                void openNote(vaultBase, filename).catch(() => {
+                  /* 開けなくてもタブは失わない。 */
+                }),
+            });
+          }
+          items.push({
+            label: "破棄",
+            testId: "ctx-delete",
+            danger: true,
+            onSelect: () => requestDelete(contextMenu.tabId),
+          });
+          return (
+            <ContextMenu
+              x={contextMenu.x}
+              y={contextMenu.y}
+              onClose={() => setContextMenu(null)}
+              items={items}
+            />
+          );
+        })()}
 
       {discardTargetId && (
         <DiscardModal
@@ -547,6 +593,9 @@ export default function App() {
         <PromoteModal
           tab={promoteTarget}
           vaultBase={vaultBase}
+          claudeApiKey={claudeApiKey}
+          claudeModel={resolveModel(claudeModel)}
+          confidenceThreshold={confidenceThreshold}
           onNeedVault={() => {
             setPromoteTargetId(null);
             setShowSettings(true);
