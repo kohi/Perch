@@ -5,6 +5,7 @@ import {
   inboxFilename,
   toJstIso,
   buildNoteMarkdown,
+  appendRelatedLinks,
 } from "./noteFile";
 
 /**
@@ -114,5 +115,51 @@ describe("buildNoteMarkdown（TC-404: YAML を実パースして検証）", () =
     expect(md.startsWith("---\n")).toBe(true);
     expect(md.indexOf("---\n\n")).toBeGreaterThan(0); // 終端 --- の後に空行→body
     expect(md.trimEnd().endsWith("ボディ")).toBe(true);
+  });
+});
+
+describe("appendRelatedLinks（Wave5 [[関連リンク]] 追記・純関数）", () => {
+  it("承認名を本文末尾に [[name]] 改行区切りで追記する", () => {
+    const out = appendRelatedLinks("本文です", ["税金メモ", "確定申告"]);
+    expect(out).toBe("本文です\n\n[[税金メモ]]\n[[確定申告]]");
+  });
+
+  it("空配列なら body を不変で返す", () => {
+    expect(appendRelatedLinks("本文", [])).toBe("本文");
+  });
+
+  it("空文字・空白のみ・重複名は除去する", () => {
+    const out = appendRelatedLinks("本文", ["a", "", "  ", "a", "b"]);
+    expect(out).toBe("本文\n\n[[a]]\n[[b]]");
+  });
+
+  it("既に本文中に [[name]] がある名前はスキップする", () => {
+    const out = appendRelatedLinks("すでに [[既存]] がある本文", ["既存", "新規"]);
+    expect(out).toBe("すでに [[既存]] がある本文\n\n[[新規]]");
+  });
+
+  it("承認が全て既存/空なら不変（追記しない）", () => {
+    expect(appendRelatedLinks("[[既存]]", ["既存", ""])).toBe("[[既存]]");
+  });
+
+  it("追記後 body を buildNoteMarkdown に渡すと、承認分のみ本文に [[..]] があり未承認は無い（昇格 .md 実体検証）", () => {
+    // 承認 = 税金メモ・買い物 / 未承認 = 秘密ノート。
+    const bodyWithLinks = appendRelatedLinks("元の本文", ["税金メモ", "買い物"]);
+    const md = buildNoteMarkdown({
+      title: "リンク検証",
+      body: bodyWithLinks,
+      createdAt: JST_29_1430,
+      tags: ["税金"],
+    });
+    const { fm, body } = splitFrontmatter(md);
+    // frontmatter は tags のみ（リンクは YAML に出さない）。
+    expect(fm.tags).toEqual(["税金"]);
+    // 本文実体に承認分の wiki-link が入っている。
+    expect(body).toContain("[[税金メモ]]");
+    expect(body).toContain("[[買い物]]");
+    expect(body.startsWith("元の本文")).toBe(true);
+    // 未承認リンクは本文にも frontmatter にも一切出ない。
+    expect(md).not.toContain("[[秘密ノート]]");
+    expect(md).not.toContain("秘密ノート");
   });
 });
