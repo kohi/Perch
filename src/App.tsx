@@ -7,7 +7,9 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import type { Tab } from "./types/tab";
+import { createTab } from "./types/tab";
 import { deriveTitle } from "./lib/title";
+import { filterTabsByTitle } from "./lib/tabFilter";
 import { db } from "./db/db";
 import {
   createAndSaveTab,
@@ -74,6 +76,10 @@ export default function App() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [promoteTargetId, setPromoteTargetId] = useState<string | null>(null);
   const [draftError, setDraftError] = useState(false);
+  // 増幅対象の複数選択（S-04 機能2）。破棄時に除去する。
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // タブ絞込フィルタ（S-02・表示のみ・active/選択/DB に影響させない）。
+  const [filterQuery, setFilterQuery] = useState("");
   // AI 設定（S-07）。永続化は meta、変更は SettingsModal 経由。
   const [confidenceThreshold, setConfidenceThresholdState] = useState(DEFAULT_CONFIDENCE);
   const [claudeModel, setClaudeModelState] = useState(DEFAULT_MODEL);
@@ -165,11 +171,40 @@ export default function App() {
   }, []);
 
   const ordered = useMemo(() => sortTabs(tabs), [tabs]);
+  // 表示リストはフィルタ後（絞込は表示のみ）。空クエリなら ordered と同一。
+  const filtered = useMemo(() => filterTabsByTitle(ordered, filterQuery), [ordered, filterQuery]);
   const active = useMemo(() => tabs.find((t) => t.id === activeId) ?? null, [tabs, activeId]);
+  // 増幅へ渡す選択 id（存在するタブのみ・順序は一覧順）。
+  const selectedTabIds = useMemo(
+    () => ordered.filter((t) => selectedIds.has(t.id)).map((t) => t.id),
+    [ordered, selectedIds],
+  );
 
   const selectTab = useCallback((id: string) => {
     setActiveId(id);
     void setActiveTabId(id);
+  }, []);
+
+  /** 増幅対象のチェック選択トグル（S-04 機能2）。 */
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  /**
+   * 増幅完了: 生成本文で新規タブを作り IndexedDB へ保存し、アクティブにする（S-04 機能2）。
+   * 既存タブは一切変更しない。生成タブは通常タブ（以後 1文字ごと自動保存の対象）。
+   */
+  const handleAmplified = useCallback((body: string) => {
+    const tab = createTab({ id: crypto.randomUUID(), now: Date.now(), body });
+    void putTab(tab);
+    setTabs((prev) => [...prev, tab]);
+    setActiveId(tab.id);
+    void setActiveTabId(tab.id);
   }, []);
 
   const handleNewTab = useCallback(async () => {
@@ -240,6 +275,13 @@ export default function App() {
       });
     }
     setDiscardTargetId(null);
+    // 破棄されたタブは増幅選択からも除去する。
+    setSelectedIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
     setTabs((prev) => {
       const remaining = prev.filter((t) => t.id !== id);
       if (activeId === id) {
@@ -378,11 +420,30 @@ export default function App() {
       style={{ gridTemplateColumns: `${paneWidth}px 5px 1fr` }}
     >
       <aside className="sidebar" data-testid="tablist">
+        {/* タブ絞込（S-02・タイトル部分一致・表示のみ）。オフライン・非 AI で動く。 */}
+        <div className="tab-filter-row">
+          <span className="search-icon" aria-hidden>
+            🔍
+          </span>
+          <input
+            className="tab-filter-input"
+            data-testid="tab-filter"
+            type="search"
+            placeholder="タブ絞込"
+            value={filterQuery}
+            onChange={(e) => setFilterQuery(e.target.value)}
+          />
+        </div>
         <div className="sidebar-scroll" data-testid="tablist-scroll">
           {ordered.length === 0 && (
             <p className="empty-hint">タブがありません。［＋新規］で作成。</p>
           )}
-          {ordered.map((t) => (
+          {ordered.length > 0 && filtered.length === 0 && filterQuery.trim().length > 0 && (
+            <p className="empty-hint" data-testid="tab-filter-empty">
+              「{filterQuery}」に一致するタブはありません。
+            </p>
+          )}
+          {filtered.map((t) => (
             <div
               key={t.id}
               className={"tab-item" + (t.id === activeId ? " active" : "")}
@@ -396,6 +457,17 @@ export default function App() {
                 setContextMenu({ tabId: t.id, x: e.clientX, y: e.clientY });
               }}
             >
+              <input
+                type="checkbox"
+                className="tab-select"
+                data-testid="tab-select"
+                data-tabid={t.id}
+                checked={selectedIds.has(t.id)}
+                title="増幅対象に選択"
+                aria-label="増幅対象に選択"
+                onClick={(e) => e.stopPropagation()}
+                onChange={() => toggleSelect(t.id)}
+              />
               <span className="tab-pin" title={t.pinned ? "ピン留め中" : "ピン留め"}>
                 {t.pinned ? "📌" : "・"}
               </span>
@@ -532,8 +604,11 @@ export default function App() {
         vaultBase={vaultBase}
         claudeModel={resolveModel(claudeModel)}
         claudeApiKey={claudeApiKey}
+        activeTabId={activeId}
+        selectedTabIds={selectedTabIds}
         onSelectTab={selectTab}
         onOpenSettings={() => setShowSettings(true)}
+        onAmplified={handleAmplified}
       />
 
       {contextMenu &&

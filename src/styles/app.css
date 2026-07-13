@@ -49,6 +49,39 @@ body.resizing {
   padding: 8px;
 }
 
+/* タブ絞込（S-02・拡張スロット本実装） */
+.tab-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 4px;
+  flex: none;
+}
+
+.tab-filter-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+.tab-filter-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* 増幅対象の複数選択チェックボックス（S-04 機能2） */
+.tab-select {
+  flex: none;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .empty-hint {
   color: var(--muted);
   font-size: 13px;
