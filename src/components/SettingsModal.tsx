@@ -1,22 +1,50 @@
 import { useState } from "react";
 import { ensureVaultDirs, isTauri, pickFolder } from "../lib/vaultFs";
 import { setVaultBase } from "../db/meta";
+import { MIN_FONT_SIZE, MAX_FONT_SIZE, clampFontSize } from "../lib/fontsize";
+import { clampConfidence } from "../db/meta";
 
 /**
- * 設定モーダル（S-07）。Wave 3 スコープ：Vault パス項目のみ実装。
- * その他（フォントサイズ既定・confidence 閾値・使用モデル・APIキー）は後 Wave の無効枠。
+ * 設定モーダル（S-07）。Wave 4 で AI 系設定を本実装（無効枠を撤去）。
  *
- * Vault 変更: pickFolder → setVaultBase（meta 永続化）→ ensureVaultDirs（_drafts/ inbox/ 作成）。
- * 非 Tauri ではフォルダ選択不可のため案内のみ（E2E に影響させない）。
+ * 項目:
+ *  - Vault パス（pickFolder → setVaultBase → ensureVaultDirs）。非 Tauri は案内のみ。
+ *  - フォントサイズ既定（既存 fontSize と同じ値を編集）。
+ *  - confidence 閾値（0〜1・既定 0.8）。AIタグ自動確定のしきい値。
+ *  - 使用モデル（既定 claude-sonnet-5）。lib/claude.ts が参照。
+ *  - Claude API キー（IndexedDB meta に保存。Git には出ない）。
+ *
+ * 永続化は親（App）のハンドラが meta に書く（fontSize/vault と同じ単一導線）。
+ * ここは値の編集 UI と即時 onChange 通知に徹する（全項目 再起動維持 = TC-704）。
  */
 export interface SettingsModalProps {
   vaultBase: string | null;
+  fontSizePx: number;
+  confidenceThreshold: number;
+  claudeModel: string;
+  claudeApiKey: string | null;
   /** Vault パス変更を親へ通知（App の state 更新用）。 */
   onVaultChange: (base: string) => void;
+  onFontSizeChange: (px: number) => void;
+  onConfidenceChange: (v: number) => void;
+  onModelChange: (v: string) => void;
+  onApiKeyChange: (v: string | null) => void;
   onClose: () => void;
 }
 
-export function SettingsModal({ vaultBase, onVaultChange, onClose }: SettingsModalProps) {
+export function SettingsModal({
+  vaultBase,
+  fontSizePx,
+  confidenceThreshold,
+  claudeModel,
+  claudeApiKey,
+  onVaultChange,
+  onFontSizeChange,
+  onConfidenceChange,
+  onModelChange,
+  onApiKeyChange,
+  onClose,
+}: SettingsModalProps) {
   const [busy, setBusy] = useState(false);
   const tauri = isTauri();
 
@@ -70,11 +98,65 @@ export function SettingsModal({ vaultBase, onVaultChange, onClose }: SettingsMod
           )}
         </div>
 
-        {/* 後 Wave の設定項目（無効枠）。 */}
-        <div className="field muted" data-testid="settings-placeholder">
-          {/* TODO(Wave5): フォントサイズ既定・confidence 閾値・使用モデル・APIキー */}
-          <span className="field-label">その他の設定</span>
-          <p className="field-desc">フォントサイズ既定・confidence 閾値・使用モデル・API キー（今後のバージョンで対応）。</p>
+        <div className="field">
+          <span className="field-label">フォントサイズ既定（px）</span>
+          <input
+            className="field-input"
+            data-testid="settings-fontsize"
+            type="number"
+            min={MIN_FONT_SIZE}
+            max={MAX_FONT_SIZE}
+            value={fontSizePx}
+            onChange={(e) => onFontSizeChange(clampFontSize(Number(e.target.value)))}
+          />
+        </div>
+
+        <div className="field">
+          <span className="field-label">confidence 閾値（0〜1・AIタグ自動確定）</span>
+          <input
+            className="field-input"
+            data-testid="settings-confidence"
+            type="number"
+            min={0}
+            max={1}
+            step={0.05}
+            value={confidenceThreshold}
+            onChange={(e) => onConfidenceChange(clampConfidence(Number(e.target.value)))}
+          />
+          <p className="field-desc muted">
+            この値以上のAI提案タグは自動確定、未満は提案止まり（手動承認待ち）。
+          </p>
+        </div>
+
+        <div className="field">
+          <span className="field-label">使用モデル（Claude）</span>
+          <input
+            className="field-input"
+            data-testid="settings-model"
+            type="text"
+            value={claudeModel}
+            placeholder="claude-sonnet-5"
+            onChange={(e) => onModelChange(e.target.value)}
+          />
+          <p className="field-desc muted">
+            あのあれ検索・AIタグが使うモデル名。<code>lib/claude.ts</code> が参照する。
+          </p>
+        </div>
+
+        <div className="field">
+          <span className="field-label">Claude API キー</span>
+          <input
+            className="field-input"
+            data-testid="settings-apikey"
+            type="password"
+            autoComplete="off"
+            value={claudeApiKey ?? ""}
+            placeholder="未設定（AI 機能は無効）"
+            onChange={(e) => onApiKeyChange(e.target.value.length > 0 ? e.target.value : null)}
+          />
+          <p className="field-desc muted">
+            あのあれ検索・AIタグ用。ローカル（IndexedDB）に保存し、Git には出ません。
+          </p>
         </div>
 
         <div className="modal-actions">

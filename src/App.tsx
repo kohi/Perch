@@ -26,8 +26,16 @@ import {
   setPaneWidth,
   clampPaneWidth,
   getVaultBase,
+  getConfidenceThreshold,
+  setConfidenceThreshold,
+  getClaudeModel,
+  setClaudeModel,
+  getClaudeApiKey,
+  setClaudeApiKey,
+  DEFAULT_CONFIDENCE,
 } from "./db/meta";
 import { stepFontSize } from "./lib/fontsize";
+import { DEFAULT_MODEL, resolveModel } from "./lib/claude";
 import { isTauri, writeNote, deleteNote } from "./lib/vaultFs";
 import { draftFilename, buildNoteMarkdown } from "./lib/noteFile";
 import { CodeMirrorEditor, type CodeMirrorHandle } from "./editor/CodeMirrorEditor";
@@ -36,6 +44,7 @@ import { ContextMenu } from "./components/ContextMenu";
 import { PromoteModal } from "./components/PromoteModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { OnboardingModal } from "./components/OnboardingModal";
+import { SearchBar } from "./components/SearchBar";
 
 /** _drafts/ への二重保存 debounce（秒）。IndexedDB 主保存はこれとは独立に即時実行する。 */
 const DRAFT_DEBOUNCE_MS = 2000;
@@ -65,6 +74,10 @@ export default function App() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [promoteTargetId, setPromoteTargetId] = useState<string | null>(null);
   const [draftError, setDraftError] = useState(false);
+  // AI 設定（S-07）。永続化は meta、変更は SettingsModal 経由。
+  const [confidenceThreshold, setConfidenceThresholdState] = useState(DEFAULT_CONFIDENCE);
+  const [claudeModel, setClaudeModelState] = useState(DEFAULT_MODEL);
+  const [claudeApiKey, setClaudeApiKeyState] = useState<string | null>(null);
 
   const editorRef = useRef<CodeMirrorHandle>(null);
   const pendingFocusRef = useRef(false);
@@ -77,13 +90,17 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [restored, savedActive, savedFont, savedPane, savedVault] = await Promise.all([
-        listTabs(),
-        getActiveTabId(),
-        getFontSize(),
-        getPaneWidth(),
-        getVaultBase(),
-      ]);
+      const [restored, savedActive, savedFont, savedPane, savedVault, savedConf, savedModel, savedKey] =
+        await Promise.all([
+          listTabs(),
+          getActiveTabId(),
+          getFontSize(),
+          getPaneWidth(),
+          getVaultBase(),
+          getConfidenceThreshold(),
+          getClaudeModel(),
+          getClaudeApiKey(),
+        ]);
       if (cancelled) return;
       setTabs(restored);
       const activeExists = savedActive && restored.some((t) => t.id === savedActive);
@@ -92,6 +109,9 @@ export default function App() {
       setPaneWidthState(savedPane);
       setVaultBaseState(savedVault);
       vaultBaseRef.current = savedVault;
+      setConfidenceThresholdState(savedConf);
+      setClaudeModelState(savedModel);
+      setClaudeApiKeyState(savedKey);
       // 初回（Tauri かつ Vault 未設定）のみオンボーディング。非 Tauri では出さない（E2E 不変）。
       if (isTauri() && savedVault === null) setShowOnboarding(true);
       setLoaded(true);
@@ -237,6 +257,30 @@ export default function App() {
     setVaultBaseState(base);
     vaultBaseRef.current = base;
     setDraftError(false); // パスが有効になったので警告解除
+  }, []);
+
+  /** フォントサイズを明示値で設定（S-07 の数値入力）。meta 永続化 → 再起動維持（TC-704）。 */
+  const handleFontSizeExact = useCallback((px: number) => {
+    setFontSizePx(px);
+    void setFontSize(px);
+  }, []);
+
+  /** confidence 閾値変更（S-07）。meta 永続化 → 昇格時の AI 自動確定に反映（TC-510/704）。 */
+  const handleConfidenceChange = useCallback((v: number) => {
+    setConfidenceThresholdState(v);
+    void setConfidenceThreshold(v);
+  }, []);
+
+  /** 使用モデル変更（S-07）。meta 永続化 → lib/claude.ts 呼び出しへ反映（TC-705）。 */
+  const handleModelChange = useCallback((v: string) => {
+    setClaudeModelState(v);
+    void setClaudeModel(v);
+  }, []);
+
+  /** API キー変更（S-07）。IndexedDB meta に保存（Git に出ない）。TC-704。 */
+  const handleApiKeyChange = useCallback((v: string | null) => {
+    setClaudeApiKeyState(v);
+    void setClaudeApiKey(v);
   }, []);
 
   /** 昇格成功時：更新済みタブを DB 永続化＋一覧へ反映（TC-406）。 */
@@ -453,6 +497,15 @@ export default function App() {
         </div>
       </main>
 
+      <SearchBar
+        tabs={tabs}
+        vaultBase={vaultBase}
+        claudeModel={resolveModel(claudeModel)}
+        claudeApiKey={claudeApiKey}
+        onSelectTab={selectTab}
+        onOpenSettings={() => setShowSettings(true)}
+      />
+
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x}
@@ -506,7 +559,15 @@ export default function App() {
       {showSettings && (
         <SettingsModal
           vaultBase={vaultBase}
+          fontSizePx={fontSizePx}
+          confidenceThreshold={confidenceThreshold}
+          claudeModel={claudeModel}
+          claudeApiKey={claudeApiKey}
           onVaultChange={handleVaultChange}
+          onFontSizeChange={handleFontSizeExact}
+          onConfidenceChange={handleConfidenceChange}
+          onModelChange={handleModelChange}
+          onApiKeyChange={handleApiKeyChange}
           onClose={() => setShowSettings(false)}
         />
       )}

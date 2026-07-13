@@ -54,3 +54,26 @@ export function ensureVaultDirs(base: string): Promise<void> {
 export function pickFolder(): Promise<string | null> {
   return invoke<string | null>("pick_folder");
 }
+
+/** Vault 内の1ノート（inbox/*.md）。あのあれ検索の候補・Obsidian で開く用。 */
+export interface VaultNote {
+  /** ファイル名（`YYYY-MM-DD-slug.md`）。 */
+  filename: string;
+  /** 絶対パス。結果の所在提示・open_note の識別に使う。 */
+  path: string;
+  /** ファイル本文（frontmatter 含む）。検索の抜粋生成に使う。 */
+  content: string;
+}
+
+/**
+ * inbox/ 配下の `.md` を全件読む。あのあれ検索の候補源（Tauri のみ）。
+ * 非 Tauri では呼び出し側が isTauri() でガードすること（invoke が無い）。
+ */
+export function readVaultNotes(base: string): Promise<VaultNote[]> {
+  return invoke<VaultNote[]>("read_vault_notes", { base });
+}
+
+/** inbox/ の指定 `.md` を OS 既定アプリ（Obsidian 等）で開く。非 Tauri は呼ばない。 */
+export function openNote(base: string, filename: string): Promise<void> {
+  return invoke<void>("open_note", { base, filename });
+}
